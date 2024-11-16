@@ -1,4 +1,4 @@
-use std::{cmp, collections::BinaryHeap, vec};
+use std::{collections::BinaryHeap, vec};
 
 fn main() {
     let mut st = SymbolTable::build(&"tumcwitumvldb".chars().collect());
