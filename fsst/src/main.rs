@@ -1,14 +1,54 @@
-use std::{collections::BinaryHeap, fs, time::Instant};
+use std::{
+    collections::{BinaryHeap, HashSet},
+    fs,
+    time::Instant,
+};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let file = fs::read_to_string("text.txt")?;
+    let file = fs::read_to_string("tests.nosync/RAW_recipes.csv")?
+        .as_bytes()
+        .to_vec();
 
-    SymbolTable::build(&file.as_bytes().to_vec());
+    //let file = "tumcwitumvldb".as_bytes().to_vec();
+    let st = SymbolTable::build(&file);
+
+    let encoded = st.encode(&file);
+    //println!("Encoded: {:?} Len: {}", encoded, encoded.len());
+    let mut size = "GB";
+    let mut div = 1024. * 1024. * 1024.;
+    let len = file.len() as f32;
+    if len / div < 1. {
+        size = "MB";
+        div /= 1024.;
+    }
+    if len / div <= 1. {
+        size = "KB";
+        div /= 1024.;
+    }
+
+    println!(
+        "Size Real ({}): {} | Size Encoded ({}): {} | CR: {}",
+        size,
+        file.len() as f32 / div,
+        size,
+        encoded.len() as f32 / div,
+        file.len() as f32 / encoded.len() as f32
+    );
+    let decoded = st.decode(&encoded);
+    //println!("Decoded {:?}", String::from_utf8(decoded.clone()));
+
+    assert_eq!(file, decoded);
+
+    println!(
+        "{:?}",
+        st.symbols[TABLE_LENGTH..(TABLE_LENGTH + st.n_symbols)]
+            .iter()
+            .map(|symbol| symbol.iter().map(|&byte| byte as char).collect())
+            .collect::<Vec<String>>()
+    );
 
     Ok(())
 }
-
-//FIND_LONG problem
 
 const NR_GENERATION: u8 = 5;
 const TABLE_LENGTH: usize = 256;
@@ -16,7 +56,7 @@ const SYMBOL_LENGTH: usize = 8;
 
 pub struct SymbolTable {
     n_symbols: usize,
-    s_index: [usize; TABLE_LENGTH],
+    s_index: [(usize, usize); TABLE_LENGTH],
     symbols: Vec<Vec<u8>>,
 }
 
@@ -33,7 +73,7 @@ impl SymbolTable {
 
         Self {
             n_symbols: 0,
-            s_index: [usize::MAX; TABLE_LENGTH],
+            s_index: [(0, 0); TABLE_LENGTH],
             symbols,
         }
     }
@@ -47,7 +87,7 @@ impl SymbolTable {
         &self,
         count1: &mut [usize; 2 * TABLE_LENGTH],
         count2: &mut [[usize; 2 * TABLE_LENGTH]; 2 * TABLE_LENGTH],
-        text: &Vec<u8>,
+        text: &[u8],
     ) {
         let mut current_pos = 0;
         let mut code = self.find_longest_symbol(text);
@@ -56,8 +96,6 @@ impl SymbolTable {
 
         count1[code] += 1;
         current_pos += self.symbols[code].len();
-        //print!("pos: {} char_n: {} ", current_pos, code);
-        //println!("char: {:?}", String::from_utf8(self.symbols[code].to_vec()));
 
         if code >= TABLE_LENGTH {
             count1[text[0] as usize] += 1;
@@ -66,13 +104,10 @@ impl SymbolTable {
         while current_pos < text.len() {
             prev = code;
             code = self.find_longest_symbol(&text[current_pos..]);
-            //println!("prev: {} code: {}", prev, code);
 
             count1[code] += 1;
             count2[prev][code] += 1;
 
-            //print!("pos: {} char_n: {} ", current_pos, code);
-            //println!("char: {:?}", String::from_utf8(self.symbols[code].to_vec()));
             if code >= TABLE_LENGTH {
                 next_char = text[current_pos] as usize;
                 count1[next_char] += 1;
@@ -106,25 +141,21 @@ impl SymbolTable {
             }
         }
 
+        let mut alredy_in = HashSet::with_capacity(TABLE_LENGTH);
         while new_table.n_symbols < TABLE_LENGTH - 1 {
-            new_table.insert(cands.pop().unwrap().1);
+            let (_, sym) = cands.pop().unwrap();
+            if !alredy_in.contains(&sym) {
+                alredy_in.insert(sym.clone());
+                new_table.insert(sym);
+            }
         }
 
         new_table.make_index();
 
-        /*println!(
-            "{:?}",
-            new_table
-                .symbols
-                .iter()
-                .map(|el| el.iter().map(|byte| *byte as char).collect())
-                .collect::<Vec<String>>()
-        );*/
-
         new_table
     }
 
-    pub fn build(text: &Vec<u8>) -> Self {
+    pub fn build(text: &[u8]) -> Self {
         let start = Instant::now();
         let mut st = SymbolTable::new();
 
@@ -143,37 +174,37 @@ impl SymbolTable {
         st
     }
 
-    /*
-        Method for sorting the symbols in the real table.
-        Puts in `s_index[x]` the index of first symbol in `symbols` which starts with `x`
-    */
     fn make_index(&mut self) {
         self.symbols[TABLE_LENGTH..(TABLE_LENGTH + self.n_symbols)].sort_by(|a, b| Ord::cmp(b, a));
 
         for i in (TABLE_LENGTH..(TABLE_LENGTH + self.n_symbols)).rev() {
-            self.s_index[self.symbols[i][0] as usize] = i;
+            self.s_index[self.symbols[i][0] as usize].0 = i;
+        }
+
+        for i in TABLE_LENGTH..(TABLE_LENGTH + self.n_symbols) {
+            self.s_index[self.symbols[i][0] as usize].1 = i + 1;
         }
     }
 
     pub fn find_longest_symbol(&self, text: &[u8]) -> usize {
         let first_char = text[0] as usize;
 
-        for code in self.s_index[first_char]..self.s_index[first_char - 1] {
-            println!("{} {:?}", code, self.symbols[code as usize]);
-            if text.starts_with(&self.symbols[code as usize]) {
-                return code as usize;
+        let range = self.s_index[first_char];
+        for code in range.0..range.1 {
+            if text.starts_with(&self.symbols[code]) {
+                return code;
             }
         }
 
         first_char
     }
 
-    pub fn decode(&self, string: &Vec<u8>) -> Vec<u8> {
+    pub fn decode(&self, string: &[u8]) -> Vec<u8> {
         let mut out: Vec<u8> = Vec::with_capacity(TABLE_LENGTH);
         let mut pos = 0;
         while pos < string.len() {
             if string[pos] != 255 {
-                out.extend(&self.symbols[TABLE_LENGTH + pos]);
+                out.extend(&self.symbols[TABLE_LENGTH + string[pos] as usize]);
                 pos += 1;
             } else {
                 out.push(string[pos + 1]);
@@ -184,7 +215,7 @@ impl SymbolTable {
         out
     }
 
-    pub fn endcode(&self, string: &Vec<u8>) -> Vec<u8> {
+    pub fn encode(&self, string: &[u8]) -> Vec<u8> {
         let mut out = Vec::with_capacity(TABLE_LENGTH);
         let mut pos = 0;
         let mut s;
