@@ -1,19 +1,30 @@
 use std::{
+    cmp::Ordering,
     collections::{BinaryHeap, HashSet},
     fs,
     time::Instant,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let file = fs::read_to_string("tests.nosync/RAW_recipes.csv")?
+    let mut file = fs::read_to_string("tests.nosync/cwida/c_name2")?
         .as_bytes()
         .to_vec();
+    let original = file.clone();
+
+    while file.len() < 8_388_608 {
+        file.extend(&original);
+    }
 
     //let file = "tumcwitumvldb".as_bytes().to_vec();
     let st = SymbolTable::build(&file);
 
+    let mut start = Instant::now();
     let encoded = st.encode(&file);
-    //println!("Encoded: {:?} Len: {}", encoded, encoded.len());
+    let mut duration = start.elapsed();
+    println!(
+        "Encoding: {:?} MB/s",
+        (file.len() as f32 / (1024. * 1024.)) / duration.as_secs_f32()
+    );
     let mut size = "GB";
     let mut div = 1024. * 1024. * 1024.;
     let len = file.len() as f32;
@@ -34,8 +45,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         encoded.len() as f32 / div,
         file.len() as f32 / encoded.len() as f32
     );
+
+    start = Instant::now();
     let decoded = st.decode(&encoded);
-    //println!("Decoded {:?}", String::from_utf8(decoded.clone()));
+    duration = start.elapsed();
+    println!(
+        "Decoding: {:?} MB/s",
+        (decoded.len() as f32 / (1024. * 1024.)) / duration.as_secs_f32()
+    );
 
     assert_eq!(file, decoded);
 
@@ -130,20 +147,20 @@ impl SymbolTable {
 
         for code1 in 0..(TABLE_LENGTH + self.n_symbols) {
             gain = self.symbols[code1].len() * count1[code1];
-            cands.push((gain, self.symbols[code1].clone()));
+            cands.push(HeapPair(gain, self.symbols[code1].clone()));
 
             for code2 in 0..(TABLE_LENGTH + self.n_symbols) {
                 s = self.symbols[code1].clone();
                 s.extend(&self.symbols[code2]);
                 s = s[..s.len().min(SYMBOL_LENGTH)].to_vec();
                 gain = s.len() * count2[code1][code2];
-                cands.push((gain, s));
+                cands.push(HeapPair(gain, s));
             }
         }
 
         let mut alredy_in = HashSet::with_capacity(TABLE_LENGTH);
         while new_table.n_symbols < TABLE_LENGTH - 1 {
-            let (_, sym) = cands.pop().unwrap();
+            let HeapPair(_, sym) = cands.pop().unwrap();
             if !alredy_in.contains(&sym) {
                 alredy_in.insert(sym.clone());
                 new_table.insert(sym);
@@ -169,7 +186,7 @@ impl SymbolTable {
         }
 
         let duration = start.elapsed();
-        println!("Construction in: {}", duration.as_secs_f64());
+        println!("Construction in: {} sec.", duration.as_secs_f64());
 
         st
     }
@@ -200,7 +217,7 @@ impl SymbolTable {
     }
 
     pub fn decode(&self, string: &[u8]) -> Vec<u8> {
-        let mut out: Vec<u8> = Vec::with_capacity(TABLE_LENGTH);
+        let mut out: Vec<u8> = Vec::with_capacity(string.len() * SYMBOL_LENGTH);
         let mut pos = 0;
         while pos < string.len() {
             if string[pos] != 255 {
@@ -216,7 +233,7 @@ impl SymbolTable {
     }
 
     pub fn encode(&self, string: &[u8]) -> Vec<u8> {
-        let mut out = Vec::with_capacity(TABLE_LENGTH);
+        let mut out = Vec::with_capacity(string.len() / 2);
         let mut pos = 0;
         let mut s;
 
@@ -233,5 +250,24 @@ impl SymbolTable {
         }
 
         out
+    }
+}
+
+#[derive(Eq, PartialEq)]
+struct HeapPair(usize, Vec<u8>);
+
+impl Ord for HeapPair {
+    fn cmp(&self, other: &Self) -> Ordering {
+        let ord = self.0.cmp(&other.0);
+        match ord {
+            Ordering::Equal => self.1.len().cmp(&other.1.len()),
+            _ => ord,
+        }
+    }
+}
+
+impl PartialOrd for HeapPair {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
     }
 }
