@@ -6,63 +6,75 @@ use std::{
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut file = fs::read_to_string("tests.nosync/cwida/c_name2")?
-        .as_bytes()
-        .to_vec();
-    let original = file.clone();
+    let dir = fs::read_dir("tests.nosync/cwida")?;
+    let mut results = String::new();
+    for tests in dir {
+        let tests_unw = tests.unwrap();
+        results.push_str(&tests_unw.file_name().into_string().unwrap());
+        results.push_str(": ");
+        let mut file = fs::read_to_string(tests_unw.path())?.as_bytes().to_vec();
+        let original = file.clone();
 
-    while file.len() < 8_388_608 {
-        file.extend(&original);
+        while file.len() < 8_388_608 {
+            file.extend(&original);
+        }
+
+        //let file = "tumcwitumvldb".as_bytes().to_vec();
+        let st = SymbolTable::build(&file);
+
+        let mut start = Instant::now();
+        let flatten: Vec<u8> = file.iter().filter(|&&x| x != 10).map(|&x| x).collect();
+        let encoded = st.encode(&flatten);
+        let mut duration = start.elapsed();
+        println!(
+            "Encoding: {:?} MB/s",
+            (file.len() as f32 / (1024. * 1024.)) / duration.as_secs_f32()
+        );
+        let mut size = "GB";
+        let mut div = 1024. * 1024. * 1024.;
+        let len = file.len() as f32;
+        if len / div < 1. {
+            size = "MB";
+            div /= 1024.;
+        }
+        if len / div <= 1. {
+            size = "KB";
+            div /= 1024.;
+        }
+
+        let cr = file.len() as f32 / encoded.len() as f32;
+        println!(
+            "Size Real ({}): {} | Size Encoded ({}): {} | CR: {}",
+            size,
+            file.len() as f32 / div,
+            size,
+            encoded.len() as f32 / div,
+            cr
+        );
+
+        start = Instant::now();
+        let decoded = st.decode(&encoded);
+        duration = start.elapsed();
+        println!(
+            "Decoding: {:?} MB/s",
+            (decoded.len() as f32 / (1024. * 1024.)) / duration.as_secs_f32()
+        );
+
+        assert_eq!(flatten, decoded);
+
+        println!(
+            "{:?}",
+            st.symbols[TABLE_LENGTH..(TABLE_LENGTH + st.n_symbols)]
+                .iter()
+                .map(|symbol| symbol.iter().map(|&byte| byte as char).collect())
+                .collect::<Vec<String>>()
+        );
+
+        results.push_str(&cr.to_string());
+        results.push('\n');
     }
 
-    //let file = "tumcwitumvldb".as_bytes().to_vec();
-    let st = SymbolTable::build(&file);
-
-    let mut start = Instant::now();
-    let encoded = st.encode(&file);
-    let mut duration = start.elapsed();
-    println!(
-        "Encoding: {:?} MB/s",
-        (file.len() as f32 / (1024. * 1024.)) / duration.as_secs_f32()
-    );
-    let mut size = "GB";
-    let mut div = 1024. * 1024. * 1024.;
-    let len = file.len() as f32;
-    if len / div < 1. {
-        size = "MB";
-        div /= 1024.;
-    }
-    if len / div <= 1. {
-        size = "KB";
-        div /= 1024.;
-    }
-
-    println!(
-        "Size Real ({}): {} | Size Encoded ({}): {} | CR: {}",
-        size,
-        file.len() as f32 / div,
-        size,
-        encoded.len() as f32 / div,
-        file.len() as f32 / encoded.len() as f32
-    );
-
-    start = Instant::now();
-    let decoded = st.decode(&encoded);
-    duration = start.elapsed();
-    println!(
-        "Decoding: {:?} MB/s",
-        (decoded.len() as f32 / (1024. * 1024.)) / duration.as_secs_f32()
-    );
-
-    assert_eq!(file, decoded);
-
-    println!(
-        "{:?}",
-        st.symbols[TABLE_LENGTH..(TABLE_LENGTH + st.n_symbols)]
-            .iter()
-            .map(|symbol| symbol.iter().map(|&byte| byte as char).collect())
-            .collect::<Vec<String>>()
-    );
+    let _ = fs::write("results.txt", results);
 
     Ok(())
 }
@@ -70,6 +82,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 const NR_GENERATION: u8 = 5;
 const TABLE_LENGTH: usize = 256;
 const SYMBOL_LENGTH: usize = 8;
+// `true` for DB Mode, `false` for File Mode
+const MODE: bool = true;
 
 pub struct SymbolTable {
     n_symbols: usize,
@@ -142,28 +156,33 @@ impl SymbolTable {
     ) -> Self {
         let mut new_table = SymbolTable::new();
         let mut cands = BinaryHeap::with_capacity(TABLE_LENGTH);
+        let mut storage_for_heap = Vec::with_capacity(TABLE_LENGTH);
         let mut gain;
         let mut s;
 
         for code1 in 0..(TABLE_LENGTH + self.n_symbols) {
             gain = self.symbols[code1].len() * count1[code1];
-            cands.push(HeapPair(gain, self.symbols[code1].clone()));
+            cands.push(HeapPair(gain, &self.symbols[code1]));
 
             for code2 in 0..(TABLE_LENGTH + self.n_symbols) {
                 s = self.symbols[code1].clone();
                 s.extend(&self.symbols[code2]);
-                s = s[..s.len().min(SYMBOL_LENGTH)].to_vec();
+                s.truncate(SYMBOL_LENGTH);
                 gain = s.len() * count2[code1][code2];
-                cands.push(HeapPair(gain, s));
+                storage_for_heap.push((gain, s));
             }
+        }
+
+        for (gain, v) in &storage_for_heap {
+            cands.push(HeapPair(*gain, v));
         }
 
         let mut alredy_in = HashSet::with_capacity(TABLE_LENGTH);
         while new_table.n_symbols < TABLE_LENGTH - 1 {
             let HeapPair(_, sym) = cands.pop().unwrap();
             if !alredy_in.contains(&sym) {
-                alredy_in.insert(sym.clone());
-                new_table.insert(sym);
+                new_table.insert(sym.to_vec());
+                alredy_in.insert(sym);
             }
         }
 
@@ -181,7 +200,21 @@ impl SymbolTable {
             let mut count1: [usize; 2 * TABLE_LENGTH] = [0; 2 * TABLE_LENGTH];
             let mut count2: [[usize; 2 * TABLE_LENGTH]; 2 * TABLE_LENGTH] =
                 [[0; 2 * TABLE_LENGTH]; 2 * TABLE_LENGTH];
-            st.compress_count(&mut count1, &mut count2, text);
+
+            if MODE {
+                for col in text.split(|&x| x == 10) {
+                    if col == [] {
+                        //st.compress_count(&mut count1, &mut count2, &[10]);
+                        continue;
+                    } //else {
+                    st.compress_count(&mut count1, &mut count2, col);
+                    //st.compress_count(&mut count1, &mut count2, &[10]);
+                    //}
+                }
+            } else {
+                st.compress_count(&mut count1, &mut count2, text);
+            }
+
             st = st.make_table(count1, count2);
         }
 
@@ -203,7 +236,7 @@ impl SymbolTable {
         }
     }
 
-    pub fn find_longest_symbol(&self, text: &[u8]) -> usize {
+    fn find_longest_symbol(&self, text: &[u8]) -> usize {
         let first_char = text[0] as usize;
 
         let range = self.s_index[first_char];
@@ -254,9 +287,9 @@ impl SymbolTable {
 }
 
 #[derive(Eq, PartialEq)]
-struct HeapPair(usize, Vec<u8>);
+struct HeapPair<'a>(usize, &'a [u8]);
 
-impl Ord for HeapPair {
+impl<'a> Ord for HeapPair<'a> {
     fn cmp(&self, other: &Self) -> Ordering {
         let ord = self.0.cmp(&other.0);
         match ord {
@@ -266,7 +299,7 @@ impl Ord for HeapPair {
     }
 }
 
-impl PartialOrd for HeapPair {
+impl<'a> PartialOrd for HeapPair<'a> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
