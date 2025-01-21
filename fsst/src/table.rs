@@ -1,9 +1,10 @@
+use std::cmp::min;
 use std::{collections::BinaryHeap, time::Instant};
 
 use crate::counters::{Counters, TABLE_LENGTH};
 use crate::heap::HeapPair;
 use crate::lossy_pht::{LossyPHS, TableEntry};
-use crate::symbol::{symbol_to_text, Symbol};
+use crate::symbol::Symbol;
 
 const GENERATIONS: [usize; 5] = [8, 38, 68, 98, 128];
 const SYMBOL_LENGTH: usize = 8;
@@ -63,66 +64,93 @@ impl SymbolTable {
         self.n_symbols += 1;
     }
 
-    fn compress_count(&mut self, text: &[Symbol]) {
-        let mut current_char = 1;
-        let mut current_8_byte = text[0];
-        let mut pointer_succ = 0;
-        let mut code = self.find_longest_symbol(&current_8_byte);
+    fn compress_count(&mut self, text: &[u8]) {
+        let mut p_start = text.as_ptr();
+        let mut p_end;
         let mut prev;
         let mut next_char;
+        let mut symbol;
+
+        unsafe {
+            p_end = text.as_ptr().add(text.len() - 8);
+            symbol = Symbol::with(*(p_start as *const u64), 64);
+        }
+
+        let mut code = self.find_longest_symbol(&symbol);
 
         self.counters.incr_c1(code);
 
         /*println!(
-            "{:?} {:?} {:?}",
-            String::from_utf8(symbol_to_text(&current_8_byte)),
+            "{:?} {:?}",
+            String::from_utf8(symbol_to_text(&symbol)),
             String::from_utf8(symbol_to_text(&self.symbols[code])),
-            String::from_utf8(symbol_to_text(&text[current_char]))
         );*/
-        current_8_byte.merge_string(&text[current_char], pointer_succ, self.symbols[code].len);
+        unsafe {
+            p_start = p_start.add(8);
+        }
         //println!("{:?}", String::from_utf8(symbol_to_text(&current_8_byte)));
 
-        pointer_succ += self.symbols[code].len;
-
-        if pointer_succ >= text[current_char].len {
-            current_char += 1;
-            pointer_succ = 0;
-        }
-
         if code >= TABLE_LENGTH {
-            self.counters.incr_c1(text[0].first1byte() as usize);
+            self.counters.incr_c1(symbol.first1byte() as usize);
         }
 
-        while current_char < text.len() {
-            assert!(pointer_succ % 8 == 0 && pointer_succ < 64);
-
+        while p_start <= p_end {
             prev = code;
-            code = self.find_longest_symbol(&current_8_byte);
+
+            unsafe {
+                symbol = Symbol::with(*(p_start as *const u64), 64);
+            }
+
+            code = self.find_longest_symbol(&symbol);
+
+            /*println!(
+                "{:?} {:?} {}",
+                String::from_utf8(symbol_to_text(&symbol)),
+                String::from_utf8(symbol_to_text(&self.symbols[code])),
+                self.symbols[code].len / 8
+            );*/
 
             self.counters.incr_c1(code);
             self.counters.incr_c2(prev, code);
 
             if code >= TABLE_LENGTH {
-                next_char = current_8_byte.first1byte() as usize;
+                next_char = symbol.first1byte() as usize;
                 self.counters.incr_c1(next_char);
                 self.counters.incr_c2(prev, next_char);
             }
 
-            current_8_byte.merge_string(&text[current_char], pointer_succ, self.symbols[code].len);
-            pointer_succ += self.symbols[code].len;
+            unsafe {
+                p_start = p_start.add(self.symbols[code].len / 8);
+            }
+        }
 
-            if pointer_succ >= text[current_char].len {
-                current_char += 1;
+        unsafe {
+            p_end = text.as_ptr().add(text.len());
+        }
 
-                if pointer_succ > text[current_char - 1].len && current_char < text.len() {
-                    current_8_byte.merge_string(&text[current_char], 0, 0);
-                }
+        // remaining bytes (less than 8)
 
-                /*if text[current_char - 1].len != 64 {
-                    println!("last chunk");
-                }*/
+        while p_start < p_end {
+            prev = code;
 
-                pointer_succ -= text[current_char - 1].len;
+            unsafe {
+                let offset = 8 * p_end.offset_from(p_start);
+                symbol = Symbol::with(*(p_start as *const u64), min(64, offset as usize));
+            }
+
+            code = self.find_longest_symbol(&symbol);
+
+            self.counters.incr_c1(code);
+            self.counters.incr_c2(prev, code);
+
+            if code >= TABLE_LENGTH {
+                next_char = symbol.first1byte() as usize;
+                self.counters.incr_c1(next_char);
+                self.counters.incr_c2(prev, next_char);
+            }
+
+            unsafe {
+                p_start = p_start.add(self.symbols[code].len / 8);
             }
         }
     }
@@ -144,7 +172,7 @@ impl SymbolTable {
 
             s1 = self.symbols[code1];
 
-            length1 = (s1.len / 8) as usize;
+            length1 = s1.len / 8;
 
             gain = length1 * count;
 
@@ -161,12 +189,12 @@ impl SymbolTable {
             for code2 in 0..(TABLE_LENGTH + self.n_symbols) {
                 s2 = self.symbols[code2];
 
-                if length1 + (s2.len / 8) as usize > SYMBOL_LENGTH {
+                if length1 + s2.len / 8 > SYMBOL_LENGTH {
                     continue;
                 }
 
                 let new: Symbol = s1.extend(&s2);
-                gain = (new.len / 8) as usize * self.counters.get_from_c2(code1, code2);
+                gain = new.len / 8 * self.counters.get_from_c2(code1, code2);
                 cands.push(HeapPair(gain, new));
             }
         }
@@ -179,7 +207,7 @@ impl SymbolTable {
         }
     }
 
-    pub fn build(text: &[Symbol]) -> Self {
+    pub fn build(text: &[u8]) -> Self {
         let mut st = SymbolTable::new();
 
         let start = Instant::now();
@@ -215,78 +243,92 @@ impl SymbolTable {
         text.first1byte() as usize
     }
 
-    pub fn decode(&self, string: &[Symbol]) -> Vec<u8> {
-        let mut out = Vec::with_capacity(string.len() * SYMBOL_LENGTH * SYMBOL_LENGTH);
-        let mut get_char = false;
+    pub fn decode(&self, string: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(string.len() * SYMBOL_LENGTH);
+        let mut p_start: *mut u8 = out.as_mut_ptr();
+        let mut size = 0;
+        let mut i = 0;
 
-        for pos in 0..string.len() {
-            for idx in 0..(string[pos].len / 8) {
-                let c = ((string[pos].value >> (56 - idx * 8))
-                    & (0b00000000_00000000_00000000_11111111)) as u8;
-                if get_char {
-                    out.push(c);
-                    get_char = false;
-                } else if c == 255 {
-                    get_char = true;
-                } else {
-                    out.extend(&symbol_to_text(&self.symbols[TABLE_LENGTH + c as usize]));
+        while i < string.len() {
+            if string[i] != 255 {
+                unsafe {
+                    (p_start as *mut u64)
+                        .write_unaligned(self.symbols[TABLE_LENGTH + string[i] as usize].value);
+                    p_start = p_start.add(self.symbols[TABLE_LENGTH + string[i] as usize].len / 8);
+                    size += self.symbols[TABLE_LENGTH + string[i] as usize].len / 8;
                 }
+
+                i += 1;
+            } else {
+                unsafe {
+                    *p_start = string[i + 1];
+                    p_start = p_start.add(1);
+                    size += 1;
+                }
+
+                i += 2;
             }
+        }
+
+        unsafe {
+            out.set_len(size);
         }
 
         out
     }
 
-    pub fn encode(&self, string: &[Symbol]) -> Vec<Symbol> {
-        let mut out: Vec<Symbol> = Vec::with_capacity(string.len() / 2);
-        let mut pos = 1;
-        let mut pos_l = 0;
-        let mut current_8_byte = string[0];
-        let mut s;
-        let mut idx_out = 0;
-        out.push(Symbol::new());
-        let mut nr_chunk = 0;
+    pub fn encode(&self, string: &[u8]) -> Vec<u8> {
+        let mut out: Vec<u8> = Vec::with_capacity(string.len() / 2);
 
-        while pos < string.len() {
-            if nr_chunk >= 8 {
-                nr_chunk = 0;
-                idx_out += 1;
-                out.push(Symbol::new());
+        let mut p_start = string.as_ptr();
+        let mut p_end;
+        let mut symbol;
+        let mut code;
+
+        unsafe {
+            p_end = string.as_ptr().add(string.len() - 8);
+        }
+
+        while p_start <= p_end {
+            unsafe {
+                symbol = Symbol::with(*(p_start as *const u64), 64);
             }
 
-            s = self.find_longest_symbol(&current_8_byte);
-            if s >= TABLE_LENGTH {
-                out[idx_out].add_char((s - TABLE_LENGTH) as u8);
-                nr_chunk += 1;
+            code = self.find_longest_symbol(&symbol);
+
+            if code >= TABLE_LENGTH {
+                out.push((code - TABLE_LENGTH) as u8);
             } else {
-                out[idx_out].add_char(255);
-
-                if nr_chunk >= 8 {
-                    nr_chunk = 1;
-                    idx_out += 1;
-                    out.push(Symbol::new());
-                } else {
-                    nr_chunk += 2;
-                }
-
-                out[idx_out].add_char(current_8_byte.first1byte() as u8);
+                out.push(255);
+                out.push(symbol.first1byte() as u8);
             }
 
-            current_8_byte.merge_string(&string[pos], pos_l, self.symbols[s].len);
-            pos_l += self.symbols[s].len;
+            unsafe {
+                p_start = p_start.add(self.symbols[code].len / 8);
+            }
+        }
 
-            if pos_l >= string[pos].len {
-                pos += 1;
+        unsafe {
+            p_end = string.as_ptr().add(string.len());
+        }
 
-                if pos_l > string[pos - 1].len && pos < string.len() {
-                    current_8_byte.merge_string(&string[pos], 0, 0);
-                }
+        while p_start < p_end {
+            unsafe {
+                let offset = 8 * p_end.offset_from(p_start);
+                symbol = Symbol::with(*(p_start as *const u64), min(64, offset as usize));
+            }
 
-                /*if string[pos - 1].len != 64 {
-                    println!("last chunk");
-                }*/
+            code = self.find_longest_symbol(&symbol);
 
-                pos_l -= string[pos - 1].len;
+            if code >= TABLE_LENGTH {
+                out.push((code - TABLE_LENGTH) as u8);
+            } else {
+                out.push(255);
+                out.push(symbol.first1byte() as u8);
+            }
+
+            unsafe {
+                p_start = p_start.add(self.symbols[code].len / 8);
             }
         }
 
