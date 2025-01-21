@@ -1,1 +1,1 @@
-/Users/angelopassarelli/fsst-rust/fsst/target/release/fsst: /Users/angelopassarelli/fsst-rust/fsst/src/main.rs
+/Users/angelopassarelli/fsst-rust/fsst/target/release/fsst: /Users/angelopassarelli/fsst-rust/fsst/src/counters.rs /Users/angelopassarelli/fsst-rust/fsst/src/heap.rs /Users/angelopassarelli/fsst-rust/fsst/src/lossy_pht.rs /Users/angelopassarelli/fsst-rust/fsst/src/main.rs /Users/angelopassarelli/fsst-rust/fsst/src/symbol.rs /Users/angelopassarelli/fsst-rust/fsst/src/table.rs
