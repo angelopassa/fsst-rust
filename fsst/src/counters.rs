@@ -53,16 +53,16 @@ impl Counters {
     fn is_set_c1(&self, idx: usize) -> bool {
         assert!(idx < COUNTER1_LENGTH);
 
-        let bucket = idx % (COUNTER1_LENGTH / 64);
+        let bucket = idx / 64;
 
-        return self.bitmap1[bucket] & (1 << (idx % 64)) != 0;
+        self.bitmap1[bucket] & (1 << (idx % 64)) != 0
     }
 
     #[inline]
     fn set_c1(&mut self, idx: usize) {
         assert!(idx < COUNTER1_LENGTH);
 
-        let bucket = idx % (COUNTER1_LENGTH / 64);
+        let bucket = idx / 64;
 
         self.bitmap1[bucket] += 1 << (idx % 64);
     }
@@ -71,16 +71,16 @@ impl Counters {
     fn is_set_c2(&self, idx: usize) -> bool {
         assert!(idx < COUNTER2_LENGTH);
 
-        let bucket = idx % (COUNTER2_LENGTH / 64);
+        let bucket = idx / 64;
 
-        return self.bitmap2[bucket] & (1 << (idx % 64)) != 0;
+        self.bitmap2[bucket] & (1 << (idx % 64)) != 0
     }
 
     #[inline]
     fn set_c2(&mut self, idx: usize) {
         assert!(idx < COUNTER2_LENGTH);
 
-        let bucket = idx % (COUNTER2_LENGTH / 64);
+        let bucket = idx / 64;
 
         self.bitmap2[bucket] += 1 << (idx % 64);
     }
@@ -89,6 +89,10 @@ impl Counters {
     pub fn get_from_c1(&self, idx: usize) -> usize {
         assert!(idx < COUNTER1_LENGTH);
 
+        if !self.is_set_c1(idx) {
+            return 0;
+        }
+
         self.counter1[idx]
     }
 
@@ -96,7 +100,13 @@ impl Counters {
     pub fn get_from_c2(&self, idx1: usize, idx2: usize) -> usize {
         assert!(idx1 < COUNTER1_LENGTH && idx2 < COUNTER1_LENGTH);
 
-        self.counter2[idx1 * COUNTER1_LENGTH + idx2]
+        let idx = idx1 * COUNTER1_LENGTH + idx2;
+
+        if !self.is_set_c2(idx) {
+            return 0;
+        }
+
+        self.counter2[idx]
     }
 
     pub fn clear(&mut self) {

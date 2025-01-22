@@ -21,7 +21,7 @@ impl Symbol {
 
     #[inline]
     pub fn starts_with(&self, other: &Self) -> bool {
-        return ((self.value ^ other.value) & (u64::MAX >> (64 - other.len))) == 0;
+        ((self.value ^ other.value) & (u64::MAX >> (64 - other.len))) == 0
     }
 
     #[inline]
@@ -49,46 +49,8 @@ impl Symbol {
     }
 }
 
-/*impl Ord for Symbol {
-    fn cmp(&self, other: &Self) -> Ordering {
-        let (shorter, longer) = if self.len > other.len {
-            (other, self)
-        } else {
-            (self, other)
-        };
-
-        for i in 0..(shorter.len / 8) {
-            match ((shorter.value << (i * 8)) & (u64::MAX << 56))
-                .cmp(&((longer.value << (i * 8)) & (u64::MAX << 56)))
-            {
-                Ordering::Equal => continue,
-                e @ _ => {
-                    if shorter == self {
-                        return e;
-                    } else {
-                        return e.reverse();
-                    }
-                }
-            }
-        }
-
-        if shorter.len == longer.len {
-            Ordering::Equal
-        } else if shorter == self {
-            Ordering::Less
-        } else {
-            Ordering::Greater
-        }
-    }
-}
-
-impl PartialOrd for Symbol {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}*/
-
-pub fn _text_to_symbols(text: &[u8]) -> Vec<Symbol> {
+#[allow(unused)]
+pub fn text_to_symbols(text: &[u8]) -> Vec<Symbol> {
     let mut s = vec![Symbol::new(); (text.len() as f64 / 8.0).ceil() as usize];
     let mut idx = 0;
     let mut counter = 0;
@@ -107,7 +69,8 @@ pub fn _text_to_symbols(text: &[u8]) -> Vec<Symbol> {
     s
 }
 
-pub fn _symbols_to_text(symbols: &[Symbol]) -> Vec<u8> {
+#[allow(unused)]
+pub fn symbols_to_text(symbols: &[Symbol]) -> Vec<u8> {
     let mut res = Vec::with_capacity(symbols.len() * 8);
 
     for &s in symbols {
@@ -117,6 +80,7 @@ pub fn _symbols_to_text(symbols: &[Symbol]) -> Vec<u8> {
     res
 }
 
+#[allow(unused)]
 pub fn symbol_to_text(symbol: &Symbol) -> Vec<u8> {
     let mut res = Vec::with_capacity(8);
 

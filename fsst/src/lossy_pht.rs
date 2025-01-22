@@ -22,7 +22,7 @@ impl LossyPHS {
 
     #[inline]
     pub fn add(&mut self, entry: u64, code: usize) -> bool {
-        let idx = hash(entry);
+        let idx = hash(entry) & (HASH_TABLE_SIZE as u64 - 1);
 
         if self.table[idx as usize].used {
             false
@@ -35,14 +35,14 @@ impl LossyPHS {
 
     #[inline]
     pub fn get(&self, entry: u64) -> TableEntry {
-        let idx = hash(entry);
+        let idx = hash(entry) & (HASH_TABLE_SIZE as u64 - 1);
 
         self.table[idx as usize]
     }
 
     #[inline]
     pub fn remove(&mut self, entry: u64) {
-        let idx = hash(entry);
+        let idx = hash(entry) & (HASH_TABLE_SIZE as u64 - 1);
 
         self.table[idx as usize] = TableEntry {
             val: 0,
@@ -52,6 +52,6 @@ impl LossyPHS {
 }
 
 #[inline]
-fn hash(value: u64) -> u64 {
-    (value.wrapping_mul(2971215073) ^ value.wrapping_shr(15)) & (HASH_TABLE_SIZE as u64 - 1)
+pub fn hash(value: u64) -> u64 {
+    value.wrapping_mul(2971215073) ^ value.wrapping_shr(15)
 }

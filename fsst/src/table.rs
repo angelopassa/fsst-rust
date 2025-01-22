@@ -1,13 +1,17 @@
 use std::cmp::min;
-use std::{collections::BinaryHeap, time::Instant};
+use std::collections::BinaryHeap;
+use std::slice;
 
 use crate::counters::{Counters, TABLE_LENGTH};
 use crate::heap::HeapPair;
-use crate::lossy_pht::{LossyPHS, TableEntry};
+use crate::lossy_pht::{hash, LossyPHS, TableEntry};
 use crate::symbol::Symbol;
 
 const GENERATIONS: [usize; 5] = [8, 38, 68, 98, 128];
 const SYMBOL_LENGTH: usize = 8;
+const FSST_SAMPLETARGET: usize = 1 << 14;
+const FSST_SAMPLEMAX: usize = 1 << 15;
+const FSST_SAMPLELINE: usize = 512;
 
 pub struct SymbolTable {
     n_symbols: usize,
@@ -22,8 +26,8 @@ impl SymbolTable {
     fn new() -> Self {
         let mut symbols = [Symbol::new(); 2 * TABLE_LENGTH];
 
-        for code in 0..TABLE_LENGTH {
-            symbols[code].add_char(code as u8);
+        for (code, item) in symbols.iter_mut().enumerate().take(TABLE_LENGTH) {
+            item.add_char(code as u8);
         }
 
         Self {
@@ -68,59 +72,36 @@ impl SymbolTable {
         let mut p_start = text.as_ptr();
         let mut p_end;
         let mut prev;
+        let mut code = 0;
         let mut next_char;
         let mut symbol;
 
-        unsafe {
-            p_end = text.as_ptr().add(text.len() - 8);
-            symbol = Symbol::with(*(p_start as *const u64), 64);
-        }
-
-        let mut code = self.find_longest_symbol(&symbol);
-
-        self.counters.incr_c1(code);
-
-        /*println!(
-            "{:?} {:?}",
-            String::from_utf8(symbol_to_text(&symbol)),
-            String::from_utf8(symbol_to_text(&self.symbols[code])),
-        );*/
-        unsafe {
-            p_start = p_start.add(8);
-        }
-        //println!("{:?}", String::from_utf8(symbol_to_text(&current_8_byte)));
-
-        if code >= TABLE_LENGTH {
-            self.counters.incr_c1(symbol.first1byte() as usize);
-        }
-
-        while p_start <= p_end {
-            prev = code;
-
+        if text.len() >= 8 {
             unsafe {
-                symbol = Symbol::with(*(p_start as *const u64), 64);
+                p_end = text.as_ptr().add(text.len() - 8);
             }
 
-            code = self.find_longest_symbol(&symbol);
+            while p_start <= p_end {
+                prev = code;
 
-            /*println!(
-                "{:?} {:?} {}",
-                String::from_utf8(symbol_to_text(&symbol)),
-                String::from_utf8(symbol_to_text(&self.symbols[code])),
-                self.symbols[code].len / 8
-            );*/
+                unsafe {
+                    symbol = Symbol::with((p_start as *const u64).read_unaligned(), 64);
+                }
 
-            self.counters.incr_c1(code);
-            self.counters.incr_c2(prev, code);
+                code = self.find_longest_symbol(&symbol);
 
-            if code >= TABLE_LENGTH {
-                next_char = symbol.first1byte() as usize;
-                self.counters.incr_c1(next_char);
-                self.counters.incr_c2(prev, next_char);
-            }
+                self.counters.incr_c1(code);
+                self.counters.incr_c2(prev, code);
 
-            unsafe {
-                p_start = p_start.add(self.symbols[code].len / 8);
+                if code >= TABLE_LENGTH {
+                    next_char = symbol.first1byte() as usize;
+                    self.counters.incr_c1(next_char);
+                    self.counters.incr_c2(prev, next_char);
+                }
+
+                unsafe {
+                    p_start = p_start.add(self.symbols[code].len / 8);
+                }
             }
         }
 
@@ -135,7 +116,10 @@ impl SymbolTable {
 
             unsafe {
                 let offset = 8 * p_end.offset_from(p_start);
-                symbol = Symbol::with(*(p_start as *const u64), min(64, offset as usize));
+                symbol = Symbol::with(
+                    (p_start as *const u64).read_unaligned(),
+                    min(64, offset as usize),
+                );
             }
 
             code = self.find_longest_symbol(&symbol);
@@ -207,18 +191,19 @@ impl SymbolTable {
         }
     }
 
-    pub fn build(text: &[u8]) -> Self {
+    pub fn build(text: &[&[u8]]) -> Self {
         let mut st = SymbolTable::new();
 
-        let start = Instant::now();
+        let mut sample_memory = Vec::with_capacity(FSST_SAMPLEMAX);
+        let sample = make_sample(&mut sample_memory, text);
 
-        for (_, &x) in GENERATIONS.iter().enumerate() {
-            st.compress_count(text);
+        for &x in GENERATIONS.iter() {
+            for line in sample.iter() {
+                st.compress_count(line);
+            }
+
             st.make_table(x);
         }
-
-        let duration = start.elapsed();
-        println!("Construction in: {} microsec.", duration.as_micros());
 
         st
     }
@@ -243,10 +228,9 @@ impl SymbolTable {
         text.first1byte() as usize
     }
 
-    pub fn decode(&self, string: &[u8]) -> Vec<u8> {
-        let mut out = Vec::with_capacity(string.len() * SYMBOL_LENGTH);
-        let mut p_start: *mut u8 = out.as_mut_ptr();
-        let mut size = 0;
+    #[allow(unused)]
+    pub fn decode(&self, string: &[u8], buffer: &mut Vec<u8>) {
+        let mut p_start: *mut u8 = buffer.as_mut_ptr();
         let mut i = 0;
 
         while i < string.len() {
@@ -255,7 +239,6 @@ impl SymbolTable {
                     (p_start as *mut u64)
                         .write_unaligned(self.symbols[TABLE_LENGTH + string[i] as usize].value);
                     p_start = p_start.add(self.symbols[TABLE_LENGTH + string[i] as usize].len / 8);
-                    size += self.symbols[TABLE_LENGTH + string[i] as usize].len / 8;
                 }
 
                 i += 1;
@@ -263,7 +246,6 @@ impl SymbolTable {
                 unsafe {
                     *p_start = string[i + 1];
                     p_start = p_start.add(1);
-                    size += 1;
                 }
 
                 i += 2;
@@ -271,40 +253,38 @@ impl SymbolTable {
         }
 
         unsafe {
-            out.set_len(size);
+            buffer.set_len(p_start.offset_from(buffer.as_ptr()) as usize);
         }
-
-        out
     }
 
-    pub fn encode(&self, string: &[u8]) -> Vec<u8> {
-        let mut out: Vec<u8> = Vec::with_capacity(string.len() / 2);
-
+    pub fn encode(&self, string: &[u8], buffer: &mut Vec<u8>) {
         let mut p_start = string.as_ptr();
         let mut p_end;
         let mut symbol;
         let mut code;
 
-        unsafe {
-            p_end = string.as_ptr().add(string.len() - 8);
-        }
-
-        while p_start <= p_end {
+        if string.len() >= 8 {
             unsafe {
-                symbol = Symbol::with(*(p_start as *const u64), 64);
+                p_end = string.as_ptr().add(string.len() - 8);
             }
 
-            code = self.find_longest_symbol(&symbol);
+            while p_start <= p_end {
+                unsafe {
+                    symbol = Symbol::with((p_start as *const u64).read_unaligned(), 64);
+                }
 
-            if code >= TABLE_LENGTH {
-                out.push((code - TABLE_LENGTH) as u8);
-            } else {
-                out.push(255);
-                out.push(symbol.first1byte() as u8);
-            }
+                code = self.find_longest_symbol(&symbol);
 
-            unsafe {
-                p_start = p_start.add(self.symbols[code].len / 8);
+                if code >= TABLE_LENGTH {
+                    buffer.push((code - TABLE_LENGTH) as u8);
+                } else {
+                    buffer.push(255);
+                    buffer.push(symbol.first1byte() as u8);
+                }
+
+                unsafe {
+                    p_start = p_start.add(self.symbols[code].len / 8);
+                }
             }
         }
 
@@ -315,24 +295,25 @@ impl SymbolTable {
         while p_start < p_end {
             unsafe {
                 let offset = 8 * p_end.offset_from(p_start);
-                symbol = Symbol::with(*(p_start as *const u64), min(64, offset as usize));
+                symbol = Symbol::with(
+                    (p_start as *const u64).read_unaligned(),
+                    min(64, offset as usize),
+                );
             }
 
             code = self.find_longest_symbol(&symbol);
 
             if code >= TABLE_LENGTH {
-                out.push((code - TABLE_LENGTH) as u8);
+                buffer.push((code - TABLE_LENGTH) as u8);
             } else {
-                out.push(255);
-                out.push(symbol.first1byte() as u8);
+                buffer.push(255);
+                buffer.push(symbol.first1byte() as u8);
             }
 
             unsafe {
                 p_start = p_start.add(self.symbols[code].len / 8);
             }
         }
-
-        out
     }
 
     fn clear(&mut self) {
@@ -358,4 +339,47 @@ impl SymbolTable {
 
         self.n_symbols = 0;
     }
+}
+
+fn make_sample<'a>(sample_buf: &'a mut Vec<u8>, text: &'a [&'a [u8]]) -> Vec<&'a [u8]> {
+    let mut sample: Vec<&[u8]> = Vec::new();
+
+    let total_size: usize = text.iter().map(|s| s.len()).sum();
+    if total_size < FSST_SAMPLETARGET {
+        return text.to_owned();
+    }
+
+    let mut sample_rnd = hash(4637947);
+    let sample_lim = FSST_SAMPLETARGET;
+    let mut sample_buf_offset: usize = 0;
+
+    while sample_buf_offset < sample_lim {
+        sample_rnd = hash(sample_rnd);
+        let line_nr = (sample_rnd as usize) % text.len();
+
+        let Some(line) = (line_nr..text.len())
+            .chain(0..line_nr)
+            .map(|line_nr| text[line_nr])
+            .find(|line| !line.is_empty())
+        else {
+            return sample;
+        };
+
+        let chunks = 1 + ((line.len() - 1) / FSST_SAMPLELINE);
+        sample_rnd = hash(sample_rnd);
+        let chunk = FSST_SAMPLELINE * ((sample_rnd as usize) % chunks);
+
+        let len = FSST_SAMPLELINE.min(line.len() - chunk);
+
+        sample_buf.extend_from_slice(&line[chunk..chunk + len]);
+
+        let slice =
+            unsafe { slice::from_raw_parts(sample_buf.as_ptr().add(sample_buf_offset), len) };
+
+        sample.push(slice);
+
+        sample_buf_offset += len;
+    }
+
+    sample
 }
