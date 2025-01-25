@@ -109,7 +109,7 @@ impl SymbolTable {
             p_end = text.as_ptr().add(text.len());
         }
 
-        // remaining bytes (less than 8)
+        // Remaining bytes (less than 8)
 
         while p_start < p_end {
             prev = code;
@@ -198,7 +198,11 @@ impl SymbolTable {
         let sample = make_sample(&mut sample_memory, text);
 
         for &x in GENERATIONS.iter() {
-            for line in sample.iter() {
+            for (_, line) in sample.iter().enumerate() {
+                /*if x < 128 && ((hash(i as u64) & 127) as usize) > x {
+                    continue;
+                }*/
+
                 st.compress_count(line);
             }
 
@@ -228,7 +232,6 @@ impl SymbolTable {
         text.first1byte() as usize
     }
 
-    #[allow(unused)]
     pub fn decode(&self, string: &[u8], buffer: &mut Vec<u8>) {
         let mut p_start: *mut u8 = buffer.as_mut_ptr();
         let mut i = 0;

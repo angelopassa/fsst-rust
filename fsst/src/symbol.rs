@@ -49,6 +49,8 @@ impl Symbol {
     }
 }
 
+// Methods to debug
+
 #[allow(unused)]
 pub fn text_to_symbols(text: &[u8]) -> Vec<Symbol> {
     let mut s = vec![Symbol::new(); (text.len() as f64 / 8.0).ceil() as usize];

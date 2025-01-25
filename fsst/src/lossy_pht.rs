@@ -44,10 +44,8 @@ impl LossyPHS {
     pub fn remove(&mut self, entry: u64) {
         let idx = hash(entry) & (HASH_TABLE_SIZE as u64 - 1);
 
-        self.table[idx as usize] = TableEntry {
-            val: 0,
-            used: false,
-        };
+        self.table[idx as usize].val = 0;
+        self.table[idx as usize].used = false;
     }
 }
 

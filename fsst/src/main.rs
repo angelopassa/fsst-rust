@@ -1,3 +1,5 @@
+use std::io::Write;
+use std::time::Duration;
 use std::{env, fs, time::Instant};
 
 mod counters;
@@ -8,7 +10,7 @@ mod table;
 use table::SymbolTable;
 
 /*
-    Compression: cargo run --release file
+    Compression: cargo run --release file_in file_out
 */
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
@@ -16,6 +18,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut end;
 
     let file = fs::read_to_string(&args[1])?;
+    let mut output = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&args[2])?;
+
     let lines = file.lines().map(|line| line.as_bytes()).collect::<Vec<_>>();
 
     start = Instant::now();
@@ -26,22 +34,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         (file.len() as f64 / 1024. / 1024.) / end.as_secs_f64()
     );
 
+    end = Duration::ZERO;
     let mut size = 0;
     let mut buffer = Vec::with_capacity(8 * 1024 * 1024);
-    start = Instant::now();
+    let mut buffer_out = Vec::with_capacity(file.len());
     for line in &lines {
-        buffer.clear();
+        start = Instant::now();
         st.encode(line, &mut buffer);
+        end += Instant::now().duration_since(start);
         size += buffer.len();
+        st.decode(&buffer, &mut buffer_out);
+        writeln!(output, "{}", String::from_utf8(buffer_out.to_vec())?)?;
+        buffer.clear();
+        buffer_out.clear();
     }
-    end = Instant::now().duration_since(start);
 
     println!(
         "Compression speed: {} MB/s",
         (file.len() as f64 / 1024. / 1024.) / end.as_secs_f64()
     );
 
-    println!("Compression Ratio: {}", file.len() as f32 / size as f32);
+    println!(
+        "Compression Ratio: {}",
+        lines.iter().map(|x| x.len()).sum::<usize>() as f32 / size as f32
+    );
 
     Ok(())
 }
@@ -90,9 +106,9 @@ mod tests {
             }
 
             results.push_str(&(file.len() as f64 / 1024. / 1024. / end.as_secs_f64()).to_string());
-            results.push_str("|");
+            results.push('|');
 
-            let cr = file.len() as f32 / size as f32;
+            let cr = lines.iter().map(|x| x.len()).sum::<usize>() as f32 / size as f32;
             results.push_str(&cr.to_string());
             results.push('\n');
         }
@@ -114,7 +130,7 @@ mod tests {
             let filename = &tests_unw.file_name().into_string().unwrap();
             println!("File: {}", filename);
             results.push_str(&filename);
-            results.push_str("|");
+            results.push('|');
 
             let file = fs::read_to_string(tests_unw.path())?;
 
